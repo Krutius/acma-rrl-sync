@@ -45,6 +45,12 @@ ZIP_URL = "https://web.acma.gov.au/rrl-updates/spectra_rrl.zip"
 SCHEMA = "acma_rrl"
 DB_URL = (os.environ.get("SUPABASE_DB_URL") or "").strip()
 
+# Deliberately excluded from the sync - not a parsing/type issue, just too
+# large relative to what it's worth keeping on a size-capped free-tier
+# database. applic_text_block is free-text application notes, not used
+# anywhere in the search tool, and was ~189MB on its own (2026-07-27).
+EXCLUDED_TABLES = {"applic_text_block"}
+
 # Indexes to (re)create on the columns that actually get searched/joined on.
 # Necessary because the table object itself is dropped and recreated fresh
 # every run (staging-table swap) - any indexes added manually outside this
@@ -53,7 +59,7 @@ DB_URL = (os.environ.get("SUPABASE_DB_URL") or "").strip()
 # (client_type, industry_cat, etc.) don't need one.
 TABLE_INDEXES = {
     "licence": ["licence_no", "client_no", "sv_id", "ss_id", "status", "bsl_no"],
-    "device_details": ["licence_no", "site_id", "antenna_id"],
+    "device_details": ["licence_no"],
     "site": ["site_id"],
     "client": ["client_no"],
     "antenna": ["antenna_id"],
@@ -220,6 +226,12 @@ def main():
                     continue
 
                 table_name = sanitize_table_name(os.path.basename(name))
+
+                if table_name in EXCLUDED_TABLES:
+                    skipped.append(name)
+                    log(f"Skipped {name}: deliberately excluded (EXCLUDED_TABLES) - size management")
+                    continue
+
                 csv_path = os.path.join(tmp, name)
                 try:
                     row_count, columns = load_csv_into_table(conn, table_name, csv_path)
