@@ -43,7 +43,25 @@ import requests
 
 ZIP_URL = "https://web.acma.gov.au/rrl-updates/spectra_rrl.zip"
 SCHEMA = "acma_rrl"
-DB_URL = os.environ.get("SUPABASE_DB_URL")
+DB_URL = (os.environ.get("SUPABASE_DB_URL") or "").strip()
+
+# Indexes to (re)create on the columns that actually get searched/joined on.
+# Necessary because the table object itself is dropped and recreated fresh
+# every run (staging-table swap) - any indexes added manually outside this
+# script would be silently lost on the next sync. Only the tables large
+# enough or joined-on enough to matter are listed; small lookup tables
+# (client_type, industry_cat, etc.) don't need one.
+TABLE_INDEXES = {
+    "licence": ["licence_no", "client_no", "sv_id", "ss_id", "status", "bsl_no"],
+    "device_details": ["licence_no", "site_id", "antenna_id"],
+    "site": ["site_id"],
+    "client": ["client_no"],
+    "antenna": ["antenna_id"],
+    "antenna_pattern": ["antenna_id"],
+    "bsl": ["bsl_no", "area_code"],
+    "auth_spectrum_freq": ["licence_no"],
+    "auth_spectrum_area": ["licence_no"],
+}
 
 
 def log(msg):
@@ -129,6 +147,13 @@ def load_csv_into_table(conn, table_name, csv_path):
 
         cur.execute(f'DROP TABLE IF EXISTS "{SCHEMA}"."{table_name}"')
         cur.execute(f'ALTER TABLE "{SCHEMA}"."{staging}" RENAME TO "{table_name}"')
+
+        for col in TABLE_INDEXES.get(table_name, []):
+            if col in columns:
+                idx_name = f"idx_{table_name}_{col}"[:63]
+                cur.execute(
+                    f'CREATE INDEX IF NOT EXISTS "{idx_name}" ON "{SCHEMA}"."{table_name}" ("{col}")'
+                )
 
     conn.commit()
     return row_count, columns
