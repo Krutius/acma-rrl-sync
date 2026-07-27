@@ -59,7 +59,7 @@ EXCLUDED_TABLES = {"applic_text_block"}
 # (client_type, industry_cat, etc.) don't need one.
 TABLE_INDEXES = {
     "licence": ["licence_no", "client_no", "sv_id", "ss_id", "status", "bsl_no"],
-    "device_details": ["licence_no"],
+    "device_details": ["licence_no", "site_id"],
     "site": ["site_id"],
     "client": ["client_no"],
     "antenna": ["antenna_id"],
