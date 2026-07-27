@@ -201,6 +201,25 @@ def ensure_log_table(conn):
     conn.commit()
 
 
+def refresh_map_view(conn):
+    """Refreshes the materialized view backing the map feature. REFRESH
+    MATERIALIZED VIEW CONCURRENTLY can't run inside a transaction block
+    (same restriction as VACUUM), so this toggles autocommit on for just
+    this one statement. Non-fatal if it fails - the map just shows
+    yesterday's data rather than taking down the whole sync.
+    """
+    original_autocommit = conn.autocommit
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute('REFRESH MATERIALIZED VIEW CONCURRENTLY acma_rrl.active_map_sites')
+        log("Refreshed acma_rrl.active_map_sites")
+    except Exception as e:
+        log(f"Could not refresh active_map_sites: {e} (non-fatal - map data may be stale)")
+    finally:
+        conn.autocommit = original_autocommit
+
+
 def write_log(conn, status, duration, tables, failed_tables, skipped, error):
     with conn.cursor() as cur:
         cur.execute(
@@ -262,6 +281,8 @@ def main():
                     conn.rollback()
                     log(f"FAILED loading {name} into {table_name}: {e}")
                     failed_tables.append({"file": name, "table": table_name, "error": str(e)})
+
+        refresh_map_view(conn)
 
     except Exception as e:
         top_level_error = str(e)
