@@ -1,0 +1,32 @@
+name: ACMA RRL daily sync
+
+on:
+  schedule:
+    # 15:00 UTC = 23:00 AWST. AWST is fixed UTC+8 year-round (WA doesn't
+    # observe daylight saving), so this offset never needs adjusting.
+    # Note: ACMA generates the extract ~3am AEST/AEDT (roughly 1-4am AWST
+    # depending on daylight saving over east), so an 11pm AWST run picks
+    # up the PREVIOUS day's file. If same-day freshness matters more than
+    # the specific hour, change this to something like '30 20 * * *'
+    # (04:30 AWST) instead.
+    - cron: '30 20 * * *'
+  workflow_dispatch: {}   # adds a "Run workflow" button under the Actions tab for manual/test runs
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests psycopg2-binary
+
+      - name: Run sync
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python scripts/sync_acma_rrl.py
