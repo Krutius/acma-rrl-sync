@@ -126,9 +126,16 @@ def read_text_robust(path):
 
 
 def load_csv_into_table(conn, table_name, csv_path):
-    """Loads one CSV into `<schema>.<table_name>`, replacing it atomically.
-    Returns (row_count, columns). Raises on failure - caller decides how to
-    handle a single bad table without aborting the whole run.
+    """Loads one CSV into `<schema>.<table_name>`, replacing its contents
+    atomically. Returns (row_count, columns). Raises on failure - caller
+    decides how to handle a single bad table without aborting the whole run.
+
+    Uses TRUNCATE + COPY back into the same table (when the column set
+    hasn't changed) rather than build-a-staging-copy-then-swap. TRUNCATE is
+    fully transactional in Postgres, so a failed load still rolls back
+    cleanly - but unlike the staging approach, it never needs a second full
+    copy of the table to exist on disk at the same time, which is what blew
+    the free-tier 1GB disk budget on the 392MB device_details table.
     """
     text = read_text_robust(csv_path)
     header = next(csv.reader(io.StringIO(text)), None)
@@ -136,23 +143,34 @@ def load_csv_into_table(conn, table_name, csv_path):
         return 0, []
     columns = sanitize_column_names(header)
 
-    staging = f"{table_name}__staging"
     with conn.cursor() as cur:
         cur.execute(f'CREATE SCHEMA IF NOT EXISTS "{SCHEMA}"')
-        cur.execute(f'DROP TABLE IF EXISTS "{SCHEMA}"."{staging}"')
-        cols_ddl = ", ".join(f'"{c}" TEXT' for c in columns)
-        cur.execute(f'CREATE TABLE "{SCHEMA}"."{staging}" ({cols_ddl})')
+
+        cur.execute('''
+            select column_name from information_schema.columns
+            where table_schema = %s and table_name = %s
+            order by ordinal_position
+        ''', (SCHEMA, table_name))
+        existing_columns = [r[0] for r in cur.fetchall()]
+
+        if existing_columns == columns:
+            # Same shape as last run - truncate in place, indexes survive
+            # and get maintained automatically as the fresh COPY runs.
+            cur.execute(f'TRUNCATE TABLE "{SCHEMA}"."{table_name}"')
+        else:
+            # First run, or the source column set changed - safe to drop
+            # and recreate since there's nothing to preserve either way.
+            cur.execute(f'DROP TABLE IF EXISTS "{SCHEMA}"."{table_name}"')
+            cols_ddl = ", ".join(f'"{c}" TEXT' for c in columns)
+            cur.execute(f'CREATE TABLE "{SCHEMA}"."{table_name}" ({cols_ddl})')
 
         cur.copy_expert(
-            f'COPY "{SCHEMA}"."{staging}" FROM STDIN WITH (FORMAT csv, HEADER true)',
+            f'COPY "{SCHEMA}"."{table_name}" FROM STDIN WITH (FORMAT csv, HEADER true)',
             io.StringIO(text)
         )
 
-        cur.execute(f'SELECT COUNT(*) FROM "{SCHEMA}"."{staging}"')
+        cur.execute(f'SELECT COUNT(*) FROM "{SCHEMA}"."{table_name}"')
         row_count = cur.fetchone()[0]
-
-        cur.execute(f'DROP TABLE IF EXISTS "{SCHEMA}"."{table_name}"')
-        cur.execute(f'ALTER TABLE "{SCHEMA}"."{staging}" RENAME TO "{table_name}"')
 
         for col in TABLE_INDEXES.get(table_name, []):
             if col in columns:
