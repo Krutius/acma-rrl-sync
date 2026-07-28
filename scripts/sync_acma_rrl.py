@@ -201,21 +201,36 @@ def ensure_log_table(conn):
     conn.commit()
 
 
+MATERIALIZED_VIEWS_TO_REFRESH = [
+    "acma_rrl.active_map_sites",
+    "acma_rrl.area_wide_landmobile_sites",
+    "acma_rrl.hf_land_mobile_sites",
+]
+
+
 def refresh_map_view(conn):
-    """Refreshes the materialized view backing the map feature. REFRESH
-    MATERIALIZED VIEW CONCURRENTLY can't run inside a transaction block
-    (same restriction as VACUUM), so this toggles autocommit on for just
-    this one statement. Non-fatal if it fails - the map just shows
-    yesterday's data rather than taking down the whole sync.
+    """Refreshes the materialized views backing the map and coordination-
+    check features. REFRESH MATERIALIZED VIEW CONCURRENTLY can't run inside
+    a transaction block (same restriction as VACUUM), so this toggles
+    autocommit on for each statement. Non-fatal per-view if one fails -
+    that feature just shows stale data rather than taking down the sync.
+    Uses plain (non-CONCURRENTLY) refresh for the two land-mobile views
+    since they don't have a unique index guaranteeing CONCURRENTLY works;
+    a brief lock during refresh is an acceptable tradeoff for these.
     """
     original_autocommit = conn.autocommit
     try:
         conn.autocommit = True
-        with conn.cursor() as cur:
-            cur.execute('REFRESH MATERIALIZED VIEW CONCURRENTLY acma_rrl.active_map_sites')
-        log("Refreshed acma_rrl.active_map_sites")
-    except Exception as e:
-        log(f"Could not refresh active_map_sites: {e} (non-fatal - map data may be stale)")
+        for view in MATERIALIZED_VIEWS_TO_REFRESH:
+            try:
+                with conn.cursor() as cur:
+                    if view == "acma_rrl.active_map_sites":
+                        cur.execute(f'REFRESH MATERIALIZED VIEW CONCURRENTLY {view}')
+                    else:
+                        cur.execute(f'REFRESH MATERIALIZED VIEW {view}')
+                log(f"Refreshed {view}")
+            except Exception as e:
+                log(f"Could not refresh {view}: {e} (non-fatal - that feature may show stale data)")
     finally:
         conn.autocommit = original_autocommit
 
